@@ -2,7 +2,7 @@
 <style>
   .root {
     flex-direction: column;
-    width: 360px;
+    width: 380px;
     padding-top: 20px;
     padding-left: 24px;
     padding-right: 24px;
@@ -30,6 +30,11 @@
   .body:dark {
     color: rgba(255, 255, 255, 0.85);
   }
+
+  .note {
+    flex-direction: column;
+    gap: 10px;
+  }
 </style>
 <Panel class="root">
   <span class="title">Three Things</span>
@@ -38,4 +43,11 @@
     <ButtonIcon><RectangleGoggles></RectangleGoggles></ButtonIcon>
     <ButtonLabel>Start in mixed reality</ButtonLabel>
   </Button>
+  <div id="no-xr" class="note" style="display: none">
+    <span class="body">This is made for Meta Quest. Open this page in the Quest browser to use it in your room.</span>
+    <Button id="emulator" variant="secondary">
+      <ButtonIcon><MonitorPlay></MonitorPlay></ButtonIcon>
+      <ButtonLabel>Try it here in the headset emulator</ButtonLabel>
+    </Button>
+  </div>
 </Panel>

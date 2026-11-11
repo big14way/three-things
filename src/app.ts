@@ -50,11 +50,13 @@ import {
   inkBounds,
   texture,
 } from './paper.js';
+import { arcPath, Coach, Ghost, squigglePath, type GhostPath } from './coach.js';
 import * as sfx from './sound.js';
 import { store, type Thing } from './state.js';
 import { Board, Card, Jar, Slate } from './tags.js';
 
 const SLATE_M = { w: 0.48, h: 0.3 };
+const RAIL_SCALE = 0.8;
 const QUICK_PICKS = ['Move my body', 'One hour of deep work', 'Call someone I love', 'Tidy one corner', 'Read 10 pages', 'Drink more water'];
 
 // reusable temporaries (never allocate per frame)
@@ -86,6 +88,10 @@ interface Tween {
   lift: number;
   done?: () => void;
 }
+
+type Lesson = 'warmup' | 'write' | 'pick' | 'wall' | 'done';
+
+const STEP: Record<Lesson, string> = { warmup: '★', write: '1', pick: '2', wall: '3', done: '4' };
 
 interface CardView {
   thing: Thing;
@@ -151,13 +157,27 @@ export class ThreeThingsSystem extends createSystem({
   private boardHighlight = -1;
   /** The slate folds down to lap height while sorting so rays reach the board. */
   private slateDown = false;
+  private slateEntity!: Entity;
+  /** latest eye-gaze ray in world space, when the device reports one */
+  private eyeO = new Vector3();
+  private eyeD = new Vector3();
+  private eyeValid = false;
   private slateTween: { p0: Vector3; p1: Vector3; q0: Quaternion; q1: Quaternion; t: number } | null = null;
   private boardScale = store.state.boardScale ?? 1;
   private jarRim!: MeshStandardMaterial;
   private wallGhost!: Mesh;
   private wallTarget: { p: Vector3; q: Quaternion } | null = null;
   private picksOpen = false;
-  private step = 0;
+  private coach!: Coach;
+  private ghost!: Ghost;
+  /** the next thing to learn or do; drives the coach ribbon and the ghost hand */
+  private lesson: Lesson = 'write';
+  private lastAction = performance.now();
+  private flashUntil = 0;
+  private ghostPath: GhostPath | null = null;
+  private ghostKind: 'pinch' | 'point' = 'pinch';
+  private tableTries = 0;
+  private jarOnTable = false;
 
   init(): void {
     void loadFont().then(() => {
@@ -170,15 +190,20 @@ export class ThreeThingsSystem extends createSystem({
     this.buildBoard();
     this.buildJar();
     this.cardGeo = new PlaneGeometry(CARD_M.w, CARD_M.h);
+    store.ensureWarmup(2);
     for (const t of store.things) {
       if (t.status !== 'done') this.spawnCard(t, false);
     }
-    if (store.things.some((t) => t.created === store.state.lastOpen)) this.step = 1;
-    if ([0, 1, 2].some((i) => store.slotOf(i))) {
-      this.step = 2;
-      this.slateDown = true;
-    }
+    const add = (o: Object3D) => {
+      this.world.createTransformEntity(o);
+    };
+    this.coach = new Coach(add);
+    this.ghost = new Ghost(add);
+    this.lesson = this.computeLesson();
+    // the slate starts folded away when there is nothing to write yet
+    this.slateDown = this.lesson === 'warmup' || [0, 1, 2].some((i) => store.slotOf(i));
     this.redrawSlateBg();
+    this.setSlateTouch(!this.slateDown);
     this.layoutDefault();
     this.bindUI();
 
@@ -187,9 +212,9 @@ export class ThreeThingsSystem extends createSystem({
       if (!v) return;
       v.grabbed = true;
       v.tween = undefined;
+      this.touch();
       this.setSlateDown(true);
-      sfx.pickUp();
-      this.setHint(v.thing.status === 'today' ? 'Drop it in the jar when it is done, or back on the board.' : 'Put it in one of the three slots on the board.');
+      sfx.pickUp(this.jarMouth());
     });
     this.queries.grabbedCards.subscribe('disqualify', (e) => {
       const v = this.viewOf(e);
@@ -198,12 +223,13 @@ export class ThreeThingsSystem extends createSystem({
       this.onCardDropped(v);
     });
     this.queries.grabbedBoard.subscribe('qualify', () => {
+      this.touch();
       this.setSlateDown(true);
       this.releaseAnchor();
       this.boardScale = 1;
       this.board.scale.setScalar(1);
       sfx.pickUp();
-      this.setHint('Point at a wall and let go. It will stick there.');
+      this.flash('Point at a wall and let go', 'It sticks flush to the wall and stays there.');
     });
     this.queries.grabbedBoard.subscribe('disqualify', () => this.onBoardDropped());
 
@@ -212,6 +238,8 @@ export class ThreeThingsSystem extends createSystem({
         if (s === VisibilityState.NonImmersive) {
           this.laidOut = false;
           this.boardAnchor = null;
+          this.jarOnTable = false;
+          this.tableTries = 0;
           this.layoutDefault();
         } else {
           this.settleFrames = 0;
@@ -219,7 +247,7 @@ export class ThreeThingsSystem extends createSystem({
       }),
       this.world.onXRFrame((frame) => this.onFrame(frame)),
     );
-    this.refreshHint();
+    this.refreshCoach();
   }
 
   // ------------------------------------------------------------- building
@@ -247,6 +275,7 @@ export class ThreeThingsSystem extends createSystem({
     e.addComponent(Slate);
     e.addComponent(RayInteractable);
     e.addComponent(PokeInteractable);
+    this.slateEntity = e;
 
     // Pen position from the hit point, not ev.uv: captured pointer events carry no uv.
     const toPx = (ev: any): [number, number] | null => {
@@ -259,9 +288,10 @@ export class ThreeThingsSystem extends createSystem({
     };
     const onDown = (ev: any) => {
       sfx.unlockAudio();
+      this.touch();
       if (this.slateDown) {
         this.setSlateDown(false);
-        this.setHint('Write another thing, then tap "Make card".');
+        this.flash('Write another thing', 'Then tap Make card.');
         return;
       }
       const px = toPx(ev);
@@ -304,7 +334,7 @@ export class ThreeThingsSystem extends createSystem({
     const onUp = (ev: any) => {
       if (this.pens.delete(ev.pointerId) && this.pens.size === 0) {
         sfx.penUp();
-        if (this.step === 0) this.setHint('Tap "Make card" when it says what you mean.');
+        this.lastAction = performance.now();
       }
     };
     ink.addEventListener('pointerdown' as any, onDown);
@@ -324,11 +354,18 @@ export class ThreeThingsSystem extends createSystem({
   }
 
   private redrawSlateBg() {
-    const prompts = [
-      'What do you want to get done today?',
-      'Anything else? Write it, or tap Ideas.',
-    ];
-    drawSlateBackground(this.slateBgCanvas, prompts[Math.min(this.step, 1)]);
+    const written = store.userThings().some((t) => t.created === store.state.lastOpen);
+    const y = store.yesterday;
+    let title = 'What do you want to get done today?';
+    let sub = 'Write it with a fingertip, or point and pinch. Then tap Make card.';
+    if (written) {
+      title = 'Anything else? Write it, or tap Ideas.';
+      sub = 'Or pick up a card and put it on the board.';
+    } else if (y && y.pinned > 0) {
+      title = "What's first today?";
+      sub = `Yesterday: ${y.done} done${y.carried ? `, ${y.carried} came back as cards` : ''}.`;
+    }
+    drawSlateBackground(this.slateBgCanvas, title, sub);
     this.slateBgTex.needsUpdate = true;
   }
 
@@ -399,10 +436,10 @@ export class ThreeThingsSystem extends createSystem({
     this.jarLabelCanvas = document.createElement('canvas');
     this.jarLabelTex = texture(this.jarLabelCanvas);
     const label = new Mesh(
-      new PlaneGeometry(0.11, 0.055),
+      new PlaneGeometry(0.11, 0.0645),
       new MeshStandardMaterial({ map: this.jarLabelTex, alphaTest: 0.5, roughness: 0.9 }),
     );
-    label.position.set(0, 0.06, 0.08);
+    label.position.set(0, 0.062, 0.08);
     this.jar.add(wall, bottom, rim, label);
     this.redrawJarLabel();
     const e = this.world.createTransformEntity(this.jar);
@@ -422,7 +459,7 @@ export class ThreeThingsSystem extends createSystem({
   }
 
   private redrawJarLabel() {
-    drawJarLabel(this.jarLabelCanvas, store.doneCount(), store.streak());
+    drawJarLabel(this.jarLabelCanvas, store.doneCount(), store.streak(), store.week());
     this.jarLabelTex.needsUpdate = true;
   }
 
@@ -524,12 +561,12 @@ export class ThreeThingsSystem extends createSystem({
     sfx.unlockAudio();
     if (this.slateDown) {
       this.setSlateDown(false);
-      this.setHint('Write another thing, then tap "Make card" again.');
+      this.flash('Write another thing', 'Then tap Make card again.');
       return;
     }
     const b = inkBounds(this.inkCanvas);
     if (!b || b.w * b.h < 400) {
-      this.setHint('Write something on the paper first, with a finger or a pinch.');
+      this.flash('Write something on the paper first', 'Touch it with a fingertip, or point and pinch.');
       return;
     }
     const ink = cropInk(this.inkCanvas);
@@ -550,12 +587,10 @@ export class ThreeThingsSystem extends createSystem({
   }
 
   private afterCardMade() {
-    if (this.step === 0) {
-      this.step = 1;
-      this.redrawSlateBg();
-    }
+    store.setTaught('write');
+    this.redrawSlateBg();
     this.relayout();
-    this.refreshHint();
+    this.refreshCoach();
   }
 
   private onCardDropped(v: CardView) {
@@ -596,21 +631,34 @@ export class ThreeThingsSystem extends createSystem({
       this.redrawBoard();
     }
     this.relayout();
-    this.refreshHint();
+    this.refreshCoach();
   }
 
   private pinTo(v: CardView, slot: number) {
     store.pin(v.thing.id, slot);
     sfx.snap();
     this.haptic(0.5, 40);
-    if (this.step < 2) this.step = 2;
+    if (!v.thing.warmup) store.setTaught('pick');
     this.redrawBoard();
     this.relayout();
-    this.refreshHint();
+    this.refreshCoach();
   }
 
   /** Ray of the controller or hand holding `e`, in world space. */
   private holdRay(e: Entity): boolean {
+    // Eyes and hands: when gaze is available, far rays are off and you aim by looking.
+    const xr = (this.input as any).xr;
+    const gp = xr?.gazeEnabled ? xr.gazePointer : null;
+    if (gp?.isSelecting?.()) {
+      if (this.eyeValid) {
+        _ro.copy(this.eyeO);
+        _rd.copy(this.eyeD);
+      } else {
+        _ro.copy(gp.getOrigin());
+        _rd.copy(gp.getDirection()).normalize();
+      }
+      return true;
+    }
     const hand = this.world.getSystem(GrabSystem)?.getHolderHand(e);
     if (!hand) return false;
     const space = this.player.raySpaces[hand];
@@ -697,45 +745,56 @@ export class ThreeThingsSystem extends createSystem({
     store.done(v.thing.id);
     this.views.delete(v.thing.id);
     this.dying.set(v.thing.id, v);
-    sfx.crumple();
+    sfx.crumple(this.jarMouth());
     this.jar.updateWorldMatrix(true, false);
     _p2.set(0, 0.26, 0).applyMatrix4(this.jar.matrixWorld);
     v.obj.getWorldQuaternion(_q);
     this.tweenTo(v, _p2, _q, 0.15, 0.3, 0.02, () => {
       v.entity.dispose();
       this.addBall(v.thing.color, true);
-      sfx.clink(this.balls.length);
+      sfx.clink(this.balls.length, this.jarMouth());
       this.haptic(0.7, 60);
       this.redrawJarLabel();
       this.redrawBoard();
       const pinnedLeft = [0, 1, 2].filter((i) => store.slotOf(i)).length;
-      if (pinnedLeft === 0 && store.doneToday() >= 1) {
-        sfx.cheer();
-        this.setHint(
-          store.doneToday() >= 3
-            ? 'All three done. That is a good day. See you tomorrow.'
-            : `Board clear: ${store.doneToday()} done today. Pin more, or come back tomorrow.`,
+      if (v.thing.warmup) {
+        // the first payoff: something already done lands in the jar
+        sfx.cheer(this.jarMouth());
+        store.setTaught('jar');
+        this.flash("That's the whole idea", 'Now write what you want to get done today.', 4500);
+        this.setSlateDown(false);
+      } else if (pinnedLeft === 0 && store.doneToday() >= 1) {
+        sfx.cheer(this.jarMouth());
+        this.flash(
+          store.doneToday() >= 3 ? 'All three done. A good day.' : `Board clear: ${store.doneToday()} done today`,
+          'Come back tomorrow for a fresh board. Your jar keeps them all.',
+          6000,
         );
+        store.setTaught('done');
       } else {
-        this.setHint(`${store.doneToday()} done today. Keep going.`);
+        this.flash(`${store.doneToday()} done today`, 'Keep going.');
+        store.setTaught('done');
       }
-      if (!store.state.onboarded) store.setOnboarded();
-      this.step = 3;
+      if (!store.state.onboarded && !v.thing.warmup) store.setOnboarded();
+      this.redrawSlateBg();
       this.relayout();
     });
   }
 
   // ------------------------------------------------------------- layout
 
-  /** Shelf slots in home-local coordinates (x right, y relative to the eyes, -z forward). */
-  private shelfSlot(i: number, out: Vector3) {
-    // an arc on the right: three columns of three, then overlapping layers
-    const azs = [0.58, 0.88, 1.18];
-    const rows = [-0.07, -0.22, -0.37];
-    const layer = Math.floor(i / 9);
-    const az = azs[Math.floor(i / 3) % 3] + layer * 0.05;
-    const r = 0.52 - layer * 0.015;
-    return out.set(Math.sin(az) * r, rows[i % 3] + layer * 0.02, -Math.cos(az) * r);
+  /**
+   * Inbox cards sit on a rail just below eye level, centred, so they stay
+   * inside a narrow field of view (Meta's glasses are about 70 degrees wide).
+   * More cards overlap instead of spreading wider. Returns the yaw to face the viewer.
+   */
+  private railSlot(i: number, n: number, out: Vector3): number {
+    const r = 0.56;
+    const spacing = n > 1 ? Math.min(0.155, 0.6 / (n - 1)) : 0;
+    const x = (i - (n - 1) / 2) * spacing;
+    const az = x / r;
+    out.set(Math.sin(az) * (r - i * 0.002), -0.1, -Math.cos(az) * (r - i * 0.002));
+    return -az;
   }
 
   private homePose(local: Vector3, yaw: number, pitch: number, outP: Vector3, outQ: Quaternion) {
@@ -767,12 +826,26 @@ export class ThreeThingsSystem extends createSystem({
 
   private slatePose(down: boolean, outP: Vector3, outQ: Quaternion) {
     if (down) this.homePose(_p2.set(0, -0.62, -0.36), 0, -1.2, outP, outQ);
-    else this.homePose(_p2.set(0, -0.33, -0.42), 0, -0.5, outP, outQ);
+    else this.homePose(_p2.set(0, -0.31, -0.44), 0, -0.55, outP, outQ);
+  }
+
+  /**
+   * The folded slate rests near the hands; it must not count as a touch
+   * target there, or resting hands would block gaze and tap it by accident.
+   */
+  private setSlateTouch(on: boolean) {
+    const ents = [this.slateEntity, this.world.getSceneEntity('guide-panel')];
+    for (const e of ents) {
+      if (!e) continue;
+      if (on && !e.hasComponent(PokeInteractable)) e.addComponent(PokeInteractable);
+      if (!on && e.hasComponent(PokeInteractable)) e.removeComponent(PokeInteractable);
+    }
   }
 
   private setSlateDown(down: boolean) {
     if (down === this.slateDown) return;
     this.slateDown = down;
+    this.setSlateTouch(!down);
     this.ui?.getElementById('make-label')?.setProperties({ text: down ? 'Write' : 'Make card' });
     this.slate.updateWorldMatrix(true, false);
     const p0 = new Vector3(), q0 = new Quaternion(), p1 = new Vector3(), q1 = new Quaternion();
@@ -787,39 +860,41 @@ export class ThreeThingsSystem extends createSystem({
     this.slateTween = null;
     setWorldPose(this.slate, _p, _q);
     if (!this.boardAnchor) {
-      this.homePose(_p2.set(0, 0.12, -0.95), 0, 0, _p, _q);
-      setWorldPose(this.board, _p, _q);
+      this.homePose(_p2.set(0, 0.18, -1.0), 0, 0, _p, _q);
+      setWorldPose(this.board, _p, _q, this.boardScale);
     }
-    this.homePose(_p2.set(-0.4, -0.58, -0.36), Math.atan2(0.4, 0.36), 0, _p, _q);
-    setWorldPose(this.jar, _p, _q);
+    if (!this.jarOnTable) {
+      this.homePose(_p2.set(0.23, -0.46, -0.44), -Math.atan2(0.23, 0.44), 0, _p, _q);
+      setWorldPose(this.jar, _p, _q);
+    }
     this.placePanel();
     this.relayout(true);
+    this.ghostPath = null;
+    if (this.coach) this.refreshCoach();
   }
 
+  /** Buttons hang just under the slate's bottom edge and move with it. */
   private placePanel() {
     const panelObj = this.world.getSceneObject('guide-panel');
     if (!panelObj) return;
-    // to the left of the slate, turned toward the viewer, so nothing sits
-    // between the hands and the board
-    const x = -0.4, z = -0.47;
-    this.homePose(_p2.set(x, -0.2, z), -Math.atan2(x, -z), -0.25, _p, _q);
-    setWorldPose(panelObj, _p, _q, panelObj.scale.x);
+    this.slate.updateWorldMatrix(true, false);
+    _p2.set(0, -SLATE_M.h / 2 - 0.042, 0.004).applyMatrix4(this.slate.matrixWorld);
+    this.slate.getWorldQuaternion(_q2);
+    setWorldPose(panelObj, _p2, _q2, panelObj.scale.x);
   }
 
   private relayout(instant = false) {
-    let shelf = 0;
-    const inbox = store.things.filter((t) => t.status === 'inbox');
-    for (const t of inbox) {
-      const v = this.views.get(t.id);
-      if (!v || v.grabbed) continue;
-      this.shelfSlot(shelf++, _p2);
-      const az = Math.atan2(_p2.x, -_p2.z);
-      this.homePose(_p2, -az, -0.25, _p, _q);
+    const inbox = store.things.filter((t) => t.status === 'inbox' && this.views.has(t.id));
+    inbox.forEach((t, i) => {
+      const v = this.views.get(t.id)!;
+      if (v.grabbed) return;
+      const yaw = this.railSlot(i, inbox.length, _p2);
+      this.homePose(_p2, yaw, -0.12, _p, _q);
       if (instant) {
         v.tween = undefined;
-        setWorldPose(v.obj, _p, _q);
-      } else this.tweenTo(v, _p, _q, 1, 0.45, 0.04);
-    }
+        setWorldPose(v.obj, _p, _q, RAIL_SCALE);
+      } else this.tweenTo(v, _p, _q, RAIL_SCALE, 0.45, 0.04);
+    });
     for (let i = 0; i < 3; i++) {
       const t = store.slotOf(i);
       const v = t && this.views.get(t.id);
@@ -854,11 +929,12 @@ export class ThreeThingsSystem extends createSystem({
       const dist = this.player.head.getWorldPosition(_p2).distanceTo(this.wallTarget.p);
       this.boardScale = Math.min(2.2, Math.max(1, dist / 1.1));
       setWorldPose(this.board, this.wallTarget.p, this.wallTarget.q, this.boardScale);
+      sfx.wallStick(this.wallTarget.p);
       this.wallTarget = null;
       this.boardOnWall = true;
-      sfx.wallStick();
       this.haptic(0.8, 70);
-      this.setHint('Stuck. It will be there next time you look.');
+      store.setTaught('wall');
+      this.flash('Stuck to your wall', 'It will be there next time you put the headset on.');
       this.anchorRequest = true;
       this.relayout(true);
       return;
@@ -895,9 +971,10 @@ export class ThreeThingsSystem extends createSystem({
       const pos = new Vector3().copy(p).addScaledVector(n, -best.d + 0.012);
       setWorldPose(this.board, pos, _q);
       this.boardOnWall = true;
-      sfx.wallStick();
+      sfx.wallStick(pos);
       this.haptic(0.8, 70);
-      this.setHint('Stuck. It will be there next time you look.');
+      store.setTaught('wall');
+      this.flash('Stuck to your wall', 'It will be there next time you put the headset on.');
     } else {
       // free-floating: turn it to face the viewer, upright
       this.player.head.getWorldPosition(_p2);
@@ -906,7 +983,7 @@ export class ThreeThingsSystem extends createSystem({
       setWorldPose(this.board, p, _q);
       this.boardOnWall = false;
       sfx.snap();
-      this.refreshHint();
+      this.refreshCoach();
     }
     this.anchorRequest = true;
     this.relayout(true);
@@ -932,6 +1009,19 @@ export class ThreeThingsSystem extends createSystem({
   private onFrame(frame: XRFrame) {
     const ref = this.world.xrReferenceSpace;
     if (!ref) return;
+    this.eyeValid = false;
+    for (const src of frame.session.inputSources) {
+      if (src.targetRayMode !== 'gaze') continue;
+      const pose = frame.getPose(src.targetRaySpace, ref);
+      if (!pose) break;
+      _m.fromArray(pose.transform.matrix);
+      this.world.player.updateWorldMatrix(true, false);
+      _m.premultiply(this.world.player.matrixWorld);
+      this.eyeO.setFromMatrixPosition(_m);
+      this.eyeD.set(0, 0, -1).transformDirection(_m);
+      this.eyeValid = true;
+      break;
+    }
     if (this.anchorRequest && frame.createAnchor) {
       this.anchorRequest = false;
       this.board.updateWorldMatrix(true, false);
@@ -1019,8 +1109,14 @@ export class ThreeThingsSystem extends createSystem({
       _p.lerpVectors(st.p0, st.p1, k);
       _q.slerpQuaternions(st.q0, st.q1, k);
       setWorldPose(this.slate, _p, _q);
-      if (st.t >= 1) this.slateTween = null;
+      this.placePanel();
+      if (st.t >= 1) {
+        this.slateTween = null;
+        this.ghostPath = null;
+        if (this.lesson === 'write') this.placeCoach('write');
+      }
     }
+    this.tickCoach(delta);
     // while a card is held, show where it would land
     for (const v of this.views.values()) {
       if (!v.grabbed) continue;
@@ -1083,6 +1179,80 @@ export class ThreeThingsSystem extends createSystem({
 
   private dying = new Map<string, CardView>();
 
+  private tickCoach(delta: number) {
+    const now = performance.now();
+    if (this.flashUntil && now >= this.flashUntil) {
+      this.flashUntil = 0;
+      this.refreshCoach();
+    }
+    // the ghost acts out the next gesture: right away the first time, after a
+    // pause when the person has done it before
+    const busy = this.pens.size > 0 || [...this.views.values()].some((v) => v.grabbed) || this.queries.grabbedBoard.entities.size > 0;
+    const idle = (now - this.lastAction) / 1000;
+    const lessonKey = this.lesson === 'warmup' ? 'jar' : this.lesson;
+    const wanted = this.laidOut && !busy && !this.slateTween && (store.taught(lessonKey) ? idle > 14 : idle > 1.2);
+    if (wanted) {
+      if (!this.ghostPath) this.ghostPath = this.buildGhostPath();
+      if (this.ghostPath) this.ghost.play(this.ghostPath, this.ghostKind);
+      else this.ghost.stop();
+    } else if (this.ghost.active) {
+      this.ghost.stop();
+    }
+    this.coach.update(delta);
+    this.ghost.update(delta);
+    sfx.setListener(this.player.head);
+    if (this.laidOut && !this.jarOnTable && this.tableTries < 40 && Math.floor(now / 500) !== Math.floor((now - delta * 1000) / 500)) {
+      this.tableTries++;
+      this.placeJarOnTable();
+    }
+  }
+
+  /**
+   * Purposeful passthrough: if the room has a table or desk within reach,
+   * the jar sits on it instead of floating.
+   */
+  private placeJarOnTable() {
+    const head = this.player.head.getWorldPosition(new Vector3());
+    let best: { p: Vector3; d: number } | null = null;
+    // where the jar would float by default, used as the preferred spot
+    const want = new Vector3(0.23, -0.46, -0.44).applyMatrix4(this.home);
+    for (const e of this.queries.planes.entities) {
+      const plane = e.getValue(XRPlane, '_plane') as { orientation?: string; polygon: DOMPointReadOnly[] } | undefined;
+      const o = e.object3D;
+      if (!plane || !o || plane.orientation !== 'horizontal') continue;
+      o.updateWorldMatrix(true, false);
+      const top = o.getWorldPosition(new Vector3());
+      const drop = head.y - top.y;
+      if (drop < 0.3 || drop > 1.1) continue; // a desk or table, not the floor
+      // clamp the preferred spot into the plane's outline
+      const local = o.worldToLocal(new Vector3(want.x, top.y, want.z));
+      let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+      for (const pt of plane.polygon) {
+        minX = Math.min(minX, pt.x); maxX = Math.max(maxX, pt.x);
+        minZ = Math.min(minZ, pt.z); maxZ = Math.max(maxZ, pt.z);
+      }
+      if (maxX - minX < 0.25 || maxZ - minZ < 0.25) continue;
+      local.x = Math.min(maxX - 0.1, Math.max(minX + 0.1, local.x));
+      local.z = Math.min(maxZ - 0.1, Math.max(minZ + 0.1, local.z));
+      local.y = 0;
+      const p = o.localToWorld(local);
+      p.y = top.y;
+      const d = Math.hypot(p.x - head.x, p.z - head.z);
+      if (d > 1.2) continue;
+      // keep it in front, inside a narrow field of view
+      _n.set(0, 0, -1).applyQuaternion(this.homeQ);
+      const ang = Math.acos(Math.max(-1, Math.min(1, (_n.x * (p.x - head.x) + _n.z * (p.z - head.z)) / Math.max(1e-6, d))));
+      if (ang > (40 * Math.PI) / 180) continue;
+      if (!best || d < best.d) best = { p, d };
+    }
+    if (!best) return;
+    _q.setFromAxisAngle(_up, Math.atan2(head.x - best.p.x, head.z - best.p.z));
+    setWorldPose(this.jar, best.p, _q);
+    this.jarOnTable = true;
+    this.ghostPath = null;
+    if (this.lesson === 'done' || this.lesson === 'warmup') this.placeCoach(this.lesson);
+  }
+
   // ------------------------------------------------------------- UI
 
   private bindUI() {
@@ -1106,8 +1276,37 @@ export class ThreeThingsSystem extends createSystem({
       this.togglePicks(false);
     }));
     on('exit', () => this.world.exitXR());
+    // Voice as an alternative to writing, where the browser offers speech recognition.
+    const SR = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+    if (SR) {
+      ui.getElementById('voice')?.setProperties({ display: 'flex' });
+      on('voice', () => this.listen(SR));
+    }
     if (this.slateDown) ui.getElementById('make-label')?.setProperties({ text: 'Write' });
     this.togglePicks(false);
+  }
+
+  private listening = false;
+
+  private listen(SR: any) {
+    if (this.listening) return;
+    this.touch();
+    const rec = new SR();
+    rec.lang = navigator.language || 'en-US';
+    rec.interimResults = false;
+    rec.maxAlternatives = 1;
+    this.listening = true;
+    this.flash('Listening', 'Say one thing you want to get done today.', 8000);
+    rec.onresult = (ev: any) => {
+      const text = String(ev.results?.[0]?.[0]?.transcript ?? '').trim();
+      if (text) this.makeTextCard(text.charAt(0).toUpperCase() + text.slice(1));
+    };
+    rec.onerror = () => this.flash("Couldn't hear that", 'Try again, or write it on the paper.');
+    rec.onend = () => {
+      this.listening = false;
+      if (this.flashUntil > performance.now() + 4000) this.flashUntil = performance.now();
+    };
+    rec.start();
   }
 
   private togglePicks(open = !this.picksOpen) {
@@ -1115,31 +1314,152 @@ export class ThreeThingsSystem extends createSystem({
     this.ui?.getElementById('picks')?.setProperties({ display: open ? 'flex' : 'none' });
   }
 
-  private setHint(text: string) {
-    this.ui?.getElementById('hint')?.setProperties({ text });
+  /** Show a short message in the coach ribbon for a few seconds. */
+  private flash(title: string, sub = '', ms = 3500) {
+    this.flashUntil = performance.now() + ms;
+    this.coach.show(title, sub);
+    this.placeCoach('focus');
   }
 
-  private refreshHint() {
-    const pinned = [0, 1, 2].filter((i) => store.slotOf(i)).length;
-    const inbox = store.things.filter((t) => t.status === 'inbox').length;
-    if (store.things.length === 0 || (inbox === 0 && pinned === 0)) {
-      const y = store.yesterday;
-      this.setHint(
-        y && y.pinned > 0
-          ? `Yesterday: ${y.done} done${y.carried ? `, ${y.carried} carried over` : ''}. Write today's first thing.`
-          : 'Write one thing you want to do today. Use a fingertip, or point and pinch.',
-      );
+  /** Any direct interaction: hide the ghost until the person goes idle again. */
+  private touch() {
+    this.lastAction = performance.now();
+    this.ghost.stop();
+  }
+
+  private jarMouth(): Vector3 {
+    this.jar.updateWorldMatrix(true, false);
+    return new Vector3(0, 0.17, 0).applyMatrix4(this.jar.matrixWorld);
+  }
+
+  private computeLesson(): Lesson {
+    const warm = store.things.find((t) => t.warmup && t.status === 'today');
+    if (warm) return 'warmup';
+    const user = store.userThings();
+    const inbox = user.filter((t) => t.status === 'inbox').length;
+    const pinned = user.filter((t) => t.status === 'today').length;
+    if (inbox === 0 && pinned === 0) return 'write';
+    if (pinned === 0) return 'pick';
+    if (!this.boardOnWall && this.hasWalls() && !store.taught('wall')) return 'wall';
+    return 'done';
+  }
+
+  private hasWalls() {
+    for (const e of this.queries.planes.entities) {
+      const plane = e.getValue(XRPlane, '_plane') as { orientation?: string } | undefined;
+      if (plane?.orientation === 'vertical') return true;
+    }
+    return false;
+  }
+
+  /** Update the coach ribbon, slate prompt and ghost for the current lesson. */
+  private refreshCoach() {
+    this.lesson = this.computeLesson();
+    const user = store.userThings();
+    const pinned = user.filter((t) => t.status === 'today').length;
+    const inbox = user.filter((t) => t.status === 'inbox').length;
+    if (performance.now() < this.flashUntil) return;
+    switch (this.lesson) {
+      case 'warmup':
+        this.coach.show('Pinch the card, point at the jar, let go', "It's already done: you put the headset on.", STEP.warmup);
+        break;
+      case 'write':
+        // the slate itself carries the prompt while writing
+        this.coach.hide();
+        break;
+      case 'pick':
+        this.coach.show('Pinch a card, point at a slot, let go', 'Pick up to three things for today.', STEP.pick);
+        break;
+      case 'wall':
+        this.coach.show("Pinch the board's edge, point at a wall, let go", 'It stays on your wall, even tomorrow.', STEP.wall);
+        break;
+      case 'done':
+        if (pinned < 3 && inbox > 0) this.coach.show(`${pinned} of 3 picked`, 'Add another, or keep the day light.', STEP.pick);
+        else this.coach.show('Finished one? Drop it in the jar', 'Pinch it, point at the jar, let go.', STEP.done);
+        break;
+    }
+    this.placeCoach(this.lesson);
+    this.ghostPath = null;
+  }
+
+  /** Put the ribbon where the next action happens. */
+  private placeCoach(where: Lesson | 'focus') {
+    const o = this.coach.obj;
+    if (where === 'focus') where = this.lesson;
+    if (where === 'done' && store.userThings().every((t) => t.status !== 'today')) where = 'pick';
+    if (where === 'done' || where === 'warmup') {
+      // above the jar, facing the viewer
+      const m = this.jarMouth();
+      if (where === 'warmup') {
+        // first run: under the board, between the card and the jar
+        this.board.updateWorldMatrix(true, false);
+        _p.set(0, -BOARD_M.h / 2 - 0.08, 0.02).applyMatrix4(this.board.matrixWorld);
+        this.board.getWorldQuaternion(_q);
+        setWorldPose(o, _p, _q, 1.25);
+        return;
+      }
+      _p.copy(m).add(_p2.set(0, 0.16, 0));
+      this.player.head.getWorldPosition(_p2);
+      _q.setFromAxisAngle(_up, Math.atan2(_p2.x - _p.x, _p2.z - _p.z));
+      setWorldPose(o, _p, _q, 0.62);
       return;
     }
-    if (pinned === 0) {
-      this.setHint('Grab a card and put it on the board.');
-    } else if (pinned < 3 && inbox > 0) {
-      this.setHint(`${pinned} of 3 on the board. Pick ${3 - pinned === 1 ? 'one more' : 'two more'}, or keep it light.`);
-    } else if (!this.boardOnWall && this.queries.planes.entities.size > 0) {
-      this.setHint('Grab the board by its edge, point at a wall and let go.');
-    } else {
-      this.setHint('When one is done, drop its card in the jar.');
+    if (where === 'write') {
+      // just above the slate's top edge
+      this.slate.updateWorldMatrix(true, false);
+      _p.set(0, SLATE_M.h / 2 + 0.04, 0.01).applyMatrix4(this.slate.matrixWorld);
+      this.slate.getWorldQuaternion(_q);
+      setWorldPose(o, _p, _q, 0.7);
+      return;
     }
+    // pick / wall: just under the board, between the rail and the board
+    this.board.updateWorldMatrix(true, false);
+    _p.set(0, -BOARD_M.h / 2 - 0.08, 0.02).applyMatrix4(this.board.matrixWorld);
+    this.board.getWorldQuaternion(_q);
+    const far = this.player.head.getWorldPosition(_p2).distanceTo(_p);
+    setWorldPose(o, _p, _q, Math.max(1.25, (far / 1.1) * 1.25));
+  }
+
+  /** The gesture the ghost hand acts out for the current lesson. */
+  private buildGhostPath(): GhostPath | null {
+    const firstToday = store.things.find((t) => t.status === 'today' && this.views.has(t.id));
+    switch (this.lesson) {
+      case 'warmup':
+      case 'done': {
+        if (!firstToday) return null;
+        this.ghostKind = 'pinch';
+        return arcPath(this.views.get(firstToday.id)!.obj.getWorldPosition(new Vector3()), this.jarMouth().add(_p2.set(0, 0.03, 0)), 0.12);
+      }
+      case 'write':
+        if (this.slateDown) return null;
+        this.ghostKind = 'point';
+        this.slate.updateWorldMatrix(true, false);
+        return squigglePath(this.slate.matrixWorld, 0.3);
+      case 'pick': {
+        const t = store.things.find((x) => x.status === 'inbox' && this.views.has(x.id));
+        if (!t) return null;
+        let slot = 0;
+        while (slot < 2 && store.slotOf(slot)) slot++;
+        const to = new Vector3(), q = new Quaternion();
+        this.slotPose(slot, to, q);
+        this.ghostKind = 'pinch';
+        return arcPath(this.views.get(t.id)!.obj.getWorldPosition(new Vector3()), to, 0.06);
+      }
+      case 'wall': {
+        // toward the nearest wall in front of the viewer
+        const head = this.player.head.getWorldPosition(new Vector3());
+        _rd.set(0, 0, -1).applyQuaternion(this.player.head.getWorldQuaternion(_q));
+        _ro.copy(head);
+        const hit = this.aimWall();
+        const from = new Vector3(BOARD_M.w / 2 - 0.04, BOARD_M.h / 2 - 0.03, 0.01);
+        this.board.updateWorldMatrix(true, false);
+        from.applyMatrix4(this.board.matrixWorld);
+        if (!hit) return null;
+        this.ghostKind = 'pinch';
+        return arcPath(from, hit.p, 0.05);
+      }
+    }
+    return null;
   }
 
   private haptic(intensity: number, ms: number) {

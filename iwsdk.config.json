@@ -17,7 +17,8 @@
         "anchors": true,
         "planeDetection": true,
         "meshDetection": true,
-        "hitTest": true
+        "hitTest": true,
+        "gazeTracking": true
       }
     },
     "input": {

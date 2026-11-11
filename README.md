@@ -8,9 +8,15 @@ Built with Meta's [Immersive Web SDK](https://iwsdk.dev) (WebXR). It runs in the
 so there is nothing to install.
 
 **Try it:** open <https://big14way.github.io/three-things/> in the Meta Quest browser and tap
-*Start in mixed reality*.
+*Start in mixed reality*. No headset? <https://big14way.github.io/three-things/emulator/> runs the
+same build with Meta's headset emulator in a desktop browser.
 
 ## How it works
+
+The first minute teaches itself. A card for something you've already done ("Put on my headset") is
+waiting on the board, and a ghost hand shows the gesture: pinch it, point at the jar, let go. Your
+first action ends with a clink in the jar. After that, one short instruction ribbon sits wherever
+the next action is, and the ghost hand comes back only if you pause.
 
 - **Write.** A sheet of paper floats at arm's length. Touch it with a fingertip, or point and
   pinch from further away, and write. Your handwriting stays as ink, and nothing is sent anywhere.
@@ -26,12 +32,28 @@ so there is nothing to install.
 
 Your notes stay in the browser's local storage on the headset.
 
+## Built for the headset you have
+
+- **Hands first.** Everything works with bare hands. You can touch the paper with a fingertip,
+  point and pinch from a distance, or use controllers.
+- **Eyes and hands.** On devices with eye tracking, you look at a card, pinch, look at the jar and
+  let go. Gaze tracking is requested, and drops follow your gaze while you hold a card.
+- **Narrow field of view.** The paper, the card rail and the board all sit within about ±30° of
+  where you're looking. This was checked on the emulator's Meta VR Glasses profile.
+- **Your room matters.** The board sticks flush to a real wall and grows on far walls so it stays
+  readable. A persistent anchor brings it back on your wall next time. The jar sits on your real
+  desk if there's one in front of you. Rooms without planes fall back to a floating layout.
+- **Spatial sound.** Every sound is synthesized and plays from where it happens, through an HRTF
+  panner.
+- **Seated and one-handed.** Everything is within arm's length. Typed quick picks replace writing,
+  and voice works where the browser supports speech recognition.
+
 ## Run it
 
 ```sh
 npm install
 npm run dev        # https://localhost:8081, with the IWER headset emulator injected
-npm run build      # static site in dist/
+npm run build      # static site in dist/, plus dist/emulator/ with the emulator bundled
 ```
 
 ## Input

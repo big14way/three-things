@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
-    "build": "vite build",
+    "build": "vite build && node scripts/build-emulator.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

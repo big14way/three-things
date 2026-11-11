@@ -1,15 +1,40 @@
 <!doctype html>
-<html>
+<html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1, shrink-to-fit=no"
-    />
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+    <meta name="description" content="Write today's things with your finger, pin three on your real wall, drop each one in a jar when it's done. Mixed reality for Meta Quest." />
     <link rel="icon" href="data:," />
     <title>Three Things</title>
+    <style>
+      body { margin: 0; background: #f4efe4; }
+      #loading {
+        position: fixed; inset: 0; z-index: 10;
+        display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px;
+        background: #f4efe4; color: #1d2a5c;
+        font: 600 18px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        transition: opacity 0.5s;
+      }
+      #loading h1 { margin: 0; font-size: 42px; letter-spacing: -0.5px; }
+      #loading p { margin: 0; max-width: 30em; padding: 0 24px; text-align: center; font-weight: 500; color: #4a5378; }
+      #loading .cards { display: flex; gap: 10px; }
+      #loading .cards i {
+        width: 54px; height: 38px; border-radius: 6px; display: block;
+        animation: bob 1.4s ease-in-out infinite;
+      }
+      #loading .cards i:nth-child(1) { background: #ffe27a; }
+      #loading .cards i:nth-child(2) { background: #ffc6a5; animation-delay: 0.15s; }
+      #loading .cards i:nth-child(3) { background: #bfe9c9; animation-delay: 0.3s; }
+      @keyframes bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+      #loading.done { opacity: 0; pointer-events: none; }
+    </style>
   </head>
-  <body style="margin: 0">
+  <body>
+    <div id="loading">
+      <div class="cards"><i></i><i></i><i></i></div>
+      <h1>Three Things</h1>
+      <p id="loading-text">Getting your paper ready…</p>
+    </div>
     <div id="scene-container"></div>
     <script type="module" src="/src/index.ts"></script>
   </body>

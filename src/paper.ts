@@ -237,12 +237,18 @@ export function drawBoard(c: HTMLCanvasElement, opts: { date: Date; filled: bool
 
 // ---------------------------------------------------------------- jar label
 
-export function drawJarLabel(c: HTMLCanvasElement, done: number, streak: number) {
+const ui = (px: number, weight = 600) => `${weight} ${px}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
+
+/**
+ * Jar label: total done, the streak, and the last seven days as dots
+ * (filled when something went in the jar that day).
+ */
+export function drawJarLabel(c: HTMLCanvasElement, done: number, streak: number, week: { label: string; done: number }[]) {
   c.width = 512;
-  c.height = 256;
+  c.height = 300;
   const g = c.getContext('2d')!;
-  g.clearRect(0, 0, 512, 256);
-  roundRect(g, 8, 8, 496, 240, 30);
+  g.clearRect(0, 0, 512, 300);
+  roundRect(g, 8, 8, 496, 284, 30);
   g.fillStyle = '#f7f1e3';
   g.fill();
   g.lineWidth = 5;
@@ -251,16 +257,78 @@ export function drawJarLabel(c: HTMLCanvasElement, done: number, streak: number)
   g.fillStyle = INK;
   g.textAlign = 'center';
   g.textBaseline = 'middle';
-  g.font = `600 84px ${HAND_FONT}`;
-  g.fillText(done === 1 ? '1 done' : `${done} done`, 256, 92);
-  g.font = `600 52px ${HAND_FONT}`;
-  g.fillStyle = 'rgba(29,42,92,0.7)';
-  g.fillText(streak > 1 ? `${streak}-day streak` : streak === 1 ? 'day 1 of a streak' : 'drop done things here', 256, 176);
+  g.font = `600 80px ${HAND_FONT}`;
+  g.fillText(done === 1 ? '1 done' : `${done} done`, 256, 70);
+  g.font = `600 46px ${HAND_FONT}`;
+  g.fillStyle = 'rgba(29,42,92,0.75)';
+  g.fillText(streak > 1 ? `${streak}-day streak` : streak === 1 ? 'day 1 of a streak' : 'drop done things here', 256, 140);
+  // the week
+  const n = week.length;
+  const span = 420, x0 = 256 - span / 2;
+  week.forEach((d, i) => {
+    const x = x0 + (span / (n - 1)) * i;
+    g.beginPath();
+    g.arc(x, 205, 19, 0, Math.PI * 2);
+    if (d.done > 0) {
+      g.fillStyle = i === n - 1 ? '#3a7bd5' : INK;
+      g.fill();
+    } else {
+      g.lineWidth = 4;
+      g.strokeStyle = 'rgba(29,42,92,0.35)';
+      g.stroke();
+    }
+    g.fillStyle = 'rgba(29,42,92,0.6)';
+    g.font = ui(24);
+    g.fillText(d.label, x, 252);
+  });
+}
+
+// ---------------------------------------------------------------- coach ribbon
+
+export const COACH_PX = { w: 1100, h: 200 };
+export const COACH_M = { w: 0.5, h: 0.5 * (200 / 1100) };
+
+/** A dark pill with one instruction line and one smaller reason line. */
+export function drawCoach(c: HTMLCanvasElement, title: string, sub: string, step?: string) {
+  c.width = COACH_PX.w;
+  c.height = COACH_PX.h;
+  const g = c.getContext('2d')!;
+  g.clearRect(0, 0, c.width, c.height);
+  roundRect(g, 6, 6, c.width - 12, c.height - 12, 46);
+  g.fillStyle = 'rgba(22,30,64,0.92)';
+  g.fill();
+  let x = 44;
+  if (step) {
+    g.beginPath();
+    g.arc(x + 34, c.height / 2, 34, 0, Math.PI * 2);
+    g.fillStyle = '#ffe27a';
+    g.fill();
+    g.fillStyle = '#16203f';
+    g.font = ui(34, 700);
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText(step, x + 34, c.height / 2 + 1);
+    x += 96;
+  }
+  g.textAlign = 'left';
+  g.textBaseline = 'middle';
+  g.fillStyle = '#ffffff';
+  let size = 46;
+  g.font = ui(size, 700);
+  while (g.measureText(title).width > c.width - x - 40 && size > 30) g.font = ui((size -= 2), 700);
+  g.fillText(title, x, sub ? 76 : c.height / 2);
+  if (sub) {
+    g.fillStyle = 'rgba(255,255,255,0.72)';
+    size = 32;
+    g.font = ui(size, 500);
+    while (g.measureText(sub).width > c.width - x - 40 && size > 22) g.font = ui((size -= 2), 500);
+    g.fillText(sub, x, 138);
+  }
 }
 
 // ---------------------------------------------------------------- slate
 
-export function drawSlateBackground(c: HTMLCanvasElement, prompt: string) {
+export function drawSlateBackground(c: HTMLCanvasElement, prompt: string, sub = '') {
   c.width = SLATE_PX.w;
   c.height = SLATE_PX.h;
   const g = c.getContext('2d')!;
@@ -273,7 +341,7 @@ export function drawSlateBackground(c: HTMLCanvasElement, prompt: string) {
   // ruled lines
   g.strokeStyle = 'rgba(70,110,180,0.16)';
   g.lineWidth = 3;
-  for (let y = 150; y < c.height - 40; y += 92) {
+  for (let y = 190; y < c.height - 40; y += 92) {
     g.beginPath();
     g.moveTo(40, y);
     g.lineTo(c.width - 40, y);
@@ -281,9 +349,14 @@ export function drawSlateBackground(c: HTMLCanvasElement, prompt: string) {
   }
   grain(g, c.width, c.height, 3);
   g.restore();
-  g.fillStyle = 'rgba(29,42,92,0.45)';
-  g.font = `600 52px ${HAND_FONT}`;
+  g.fillStyle = 'rgba(29,42,92,0.62)';
+  g.font = `600 56px ${HAND_FONT}`;
   g.textAlign = 'left';
   g.textBaseline = 'middle';
-  g.fillText(prompt, 44, 64);
+  g.fillText(prompt, 44, 62);
+  if (sub) {
+    g.fillStyle = 'rgba(29,42,92,0.45)';
+    g.font = ui(30, 500);
+    g.fillText(sub, 46, 118);
+  }
 }

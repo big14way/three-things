@@ -19,6 +19,8 @@ export interface Thing {
   created: string; // day key
   carried: number; // how many days it has been carried over
   doneDay?: string;
+  /** the first-run card ("Put on my headset") that teaches the jar */
+  warmup?: boolean;
 }
 
 export interface DayLog {
@@ -35,6 +37,8 @@ export interface SavedState {
   boardAnchor?: string; // persistent anchor UUID (Quest)
   boardScale?: number; // the board grows on far walls so it stays readable
   onboarded: boolean;
+  /** lessons already shown with the ghost hand */
+  taught?: Record<string, boolean>;
 }
 
 const KEY = 'three-things:v1';
@@ -221,6 +225,55 @@ export class Store {
   setOnboarded() {
     this.state.onboarded = true;
     this.save();
+  }
+
+  taught(lesson: string): boolean {
+    return !!this.state.taught?.[lesson];
+  }
+
+  setTaught(lesson: string) {
+    (this.state.taught ??= {})[lesson] = true;
+    this.save();
+  }
+
+  /**
+   * First run only: a card for something already done (putting the headset
+   * on), pinned to the board, so the very first gesture ends in the jar.
+   */
+  ensureWarmup(color: number): Thing | null {
+    if (this.state.onboarded || this.state.things.length > 0 || this.state.taught?.jar) return null;
+    const t: Thing = {
+      id: 'warmup',
+      kind: 'text',
+      text: 'Put on my headset',
+      color,
+      status: 'today',
+      slot: 0,
+      created: dayKey(),
+      carried: 0,
+      warmup: true,
+    };
+    this.state.things.push(t);
+    this.save();
+    return t;
+  }
+
+  /** The last seven days, oldest first, with a one-letter weekday label. */
+  week(): { label: string; done: number }[] {
+    const out: { label: string; done: number }[] = [];
+    let k = dayKey();
+    for (let i = 0; i < 7; i++) {
+      const [y, m, d] = k.split('-').map(Number);
+      const label = new Date(y, m - 1, d).toLocaleDateString('en', { weekday: 'narrow' });
+      out.unshift({ label, done: this.state.days[k]?.done ?? 0 });
+      k = previousDay(k);
+    }
+    return out;
+  }
+
+  /** Things the user wrote or picked (not the warm-up card). */
+  userThings() {
+    return this.state.things.filter((t) => !t.warmup);
   }
 
   /** Wipe everything (used by the "start over" control and for recording demos). */

@@ -7,6 +7,8 @@
  *   await tt.stroke('right', points, from); // trigger-held stroke along points
  *   await tt.drag('right', from, a, b);     // grab at a, carry to b, release
  */
+import * as core from '@iwsdk/core';
+
 type V3 = [number, number, number];
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -104,7 +106,17 @@ function pos(o: any): V3 {
 export function installDevDriver(world: any, app: any) {
   const panel = () => world.getSceneObject('guide-panel');
   (window as any).tt = {
-    world, app, device, sleep, aim, trigger, mode, stroke, drag, click, release, pos,
+    world, app, core, device, sleep, aim, trigger, mode, stroke, drag, click, release, pos,
+    /** point the headset (and so head-gaze) at a world point */
+    look: (to: V3) => {
+      const d = take();
+      let vx = to[0] - d.position.x, vy = to[1] - d.position.y, vz = to[2] - d.position.z;
+      const L = Math.hypot(vx, vy, vz);
+      vx /= L; vy /= L; vz /= L;
+      const yaw = Math.atan2(-vx, -vz), pitch = Math.asin(vy);
+      const cy = Math.cos(yaw / 2), sy = Math.sin(yaw / 2), cp = Math.cos(pitch / 2), sp = Math.sin(pitch / 2);
+      d.quaternion.set(sp * cy, sy * cp, -sp * sy, cy * cp);
+    },
     /** world position of a guide panel element by id */
     el: (id: string) => pos(panel().getElementById(id)),
     /** world position of the card for the n-th thing in the store with a given status */
