@@ -7,6 +7,9 @@ done. The jar keeps filling up, day after day.
 Built with Meta's [Immersive Web SDK](https://iwsdk.dev) (WebXR). It runs in the Quest browser,
 so there is nothing to install.
 
+**Try it:** open <https://big14way.github.io/three-things/> in the Meta Quest browser and tap
+*Start in mixed reality*.
+
 ## How it works
 
 - **Write.** A sheet of paper floats at arm's length. Touch it with a fingertip, or point and
