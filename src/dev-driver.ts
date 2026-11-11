@@ -21,8 +21,13 @@ function take() {
   return d;
 }
 
+function input(hand: 'left' | 'right') {
+  const d = take();
+  return d.primaryInputMode === 'hand' ? d.hands[hand] : d.controllers[hand];
+}
+
 function aim(hand: 'left' | 'right', from: V3, to: V3) {
-  const c = take().controllers[hand];
+  const c = input(hand);
   let vx = to[0] - from[0], vy = to[1] - from[1], vz = to[2] - from[2];
   const L = Math.hypot(vx, vy, vz);
   vx /= L; vy /= L; vz /= L;
@@ -35,7 +40,14 @@ function aim(hand: 'left' | 'right', from: V3, to: V3) {
 }
 
 function trigger(hand: 'left' | 'right', v: number) {
-  take().controllers[hand].updateButtonValue('trigger', v);
+  const d = take();
+  if (d.primaryInputMode === 'hand') d.hands[hand].updatePinchValue(v);
+  else d.controllers[hand].updateButtonValue('trigger', v);
+}
+
+/** 'controller' or 'hand' */
+function mode(m: 'controller' | 'hand') {
+  take().primaryInputMode = m;
 }
 
 async function stroke(hand: 'left' | 'right', pts: V3[], from: V3, ms = 22) {
@@ -92,7 +104,7 @@ function pos(o: any): V3 {
 export function installDevDriver(world: any, app: any) {
   const panel = () => world.getSceneObject('guide-panel');
   (window as any).tt = {
-    world, app, device, sleep, aim, trigger, stroke, drag, click, release, pos,
+    world, app, device, sleep, aim, trigger, mode, stroke, drag, click, release, pos,
     /** world position of a guide panel element by id */
     el: (id: string) => pos(panel().getElementById(id)),
     /** world position of the card for the n-th thing in the store with a given status */
