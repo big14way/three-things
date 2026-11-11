@@ -7,6 +7,8 @@ done. The jar keeps filling up, day after day.
 Built with Meta's [Immersive Web SDK](https://iwsdk.dev) (WebXR). It runs in the Quest browser,
 so there is nothing to install.
 
+**Demo video (2:20):** <https://youtu.be/3y7JnbB56AU>
+
 **Try it:** open <https://big14way.github.io/three-things/> in the Meta Quest browser and tap
 *Start in mixed reality*. No headset? <https://big14way.github.io/three-things/emulator/> runs the
 same build with Meta's headset emulator in a desktop browser.
