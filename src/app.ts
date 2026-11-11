@@ -70,6 +70,10 @@ const _m2 = new Matrix4();
 const _n = new Vector3();
 const _up = new Vector3(0, 1, 0);
 const _pen = new Vector3();
+const _tip = new Vector3();
+const _px = { x: 0, y: 0, z: 0 };
+/** pen ids for fingertips (pointer ids are small positive numbers) */
+const FINGER_IDS = [-101, -102];
 const _ro = new Vector3();
 const _rd = new Vector3();
 const _hit = new Vector3();
@@ -158,6 +162,7 @@ export class ThreeThingsSystem extends createSystem({
   /** The slate folds down to lap height while sorting so rays reach the board. */
   private slateDown = false;
   private slateEntity!: Entity;
+  private inkMesh!: Mesh;
   /** latest eye-gaze ray in world space, when the device reports one */
   private eyeO = new Vector3();
   private eyeD = new Vector3();
@@ -244,6 +249,11 @@ export class ThreeThingsSystem extends createSystem({
         } else {
           this.settleFrames = 0;
         }
+        // system menu or headset off: end any stroke in progress and silence the pencil
+        if (s !== VisibilityState.Visible) {
+          this.pens.clear();
+          sfx.penUp();
+        }
       }),
       this.world.onXRFrame((frame) => this.onFrame(frame)),
     );
@@ -273,20 +283,15 @@ export class ThreeThingsSystem extends createSystem({
     this.redrawSlateBg();
     const e = this.world.createTransformEntity(this.slate);
     e.addComponent(Slate);
+    // Rays (pinch or trigger) and the mouse write through pointer events.
+    // Fingertips are tracked directly in updateFingers(), because a finger with
+    // no haptics pushes through the paper and a touch pointer would let go.
     e.addComponent(RayInteractable);
-    e.addComponent(PokeInteractable);
     this.slateEntity = e;
+    this.inkMesh = ink;
 
-    // Pen position from the hit point, not ev.uv: captured pointer events carry no uv.
-    const toPx = (ev: any): [number, number] | null => {
-      const p = ev.point as Vector3 | undefined;
-      if (!p) return null;
-      const l = ink.worldToLocal(_pen.copy(p));
-      const u = l.x / SLATE_M.w + 0.5, v = l.y / SLATE_M.h + 0.5;
-      if (u < -0.05 || u > 1.05 || v < -0.05 || v > 1.05) return null;
-      return [u * SLATE_PX.w, (1 - v) * SLATE_PX.h];
-    };
     const onDown = (ev: any) => {
+      if (ev.pointerType === 'touch') return;
       sfx.unlockAudio();
       this.touch();
       if (this.slateDown) {
@@ -294,54 +299,104 @@ export class ThreeThingsSystem extends createSystem({
         this.flash('Write another thing', 'Then tap Make card.');
         return;
       }
-      const px = toPx(ev);
-      if (!px) return;
-      const [x, y] = px;
-      const p = ev.point as Vector3;
-      this.pens.set(ev.pointerId, { x, y, mx: x, my: y, t: performance.now(), wx: p.x, wy: p.y, wz: p.z });
-      this.dot(x, y);
-      try {
-        ev.target?.setPointerCapture?.(ev.pointerId);
-      } catch {
-        // capture is optional
+      if (ev.point && this.penDown(ev.pointerId, ev.point)) {
+        // keep the stroke while the ray sweeps past the edge
+        try {
+          ev.target?.setPointerCapture?.(ev.pointerId);
+        } catch {
+          // capture is optional
+        }
       }
     };
     const onMove = (ev: any) => {
-      const pen = this.pens.get(ev.pointerId);
-      if (!pen) return;
-      const px = toPx(ev);
-      if (!px) return;
-      const [x, y] = px;
-      if (Math.hypot(x - pen.x, y - pen.y) < 2) return;
-      const g = this.inkCanvas.getContext('2d')!;
-      const mx = (pen.x + x) / 2, my = (pen.y + y) / 2;
-      g.strokeStyle = INK;
-      g.lineWidth = 15;
-      g.lineCap = 'round';
-      g.lineJoin = 'round';
-      g.beginPath();
-      g.moveTo(pen.mx, pen.my);
-      g.quadraticCurveTo(pen.x, pen.y, mx, my);
-      g.stroke();
-      this.inkTex.needsUpdate = true;
-      const now = performance.now();
-      const p = ev.point as Vector3;
-      const dist = Math.hypot(p.x - pen.wx, p.y - pen.wy, p.z - pen.wz);
-      sfx.scratchLevel(dist / Math.max(0.008, (now - pen.t) / 1000));
-      pen.x = x; pen.y = y; pen.mx = mx; pen.my = my; pen.t = now;
-      pen.wx = p.x; pen.wy = p.y; pen.wz = p.z;
+      if (ev.point) this.penMove(ev.pointerId, ev.point);
     };
-    const onUp = (ev: any) => {
-      if (this.pens.delete(ev.pointerId) && this.pens.size === 0) {
-        sfx.penUp();
-        this.lastAction = performance.now();
-      }
-    };
+    const onUp = (ev: any) => this.penUp(ev.pointerId);
     ink.addEventListener('pointerdown' as any, onDown);
     ink.addEventListener('pointermove' as any, onMove);
     ink.addEventListener('pointerup' as any, onUp);
     ink.addEventListener('pointerleave' as any, onUp);
     ink.addEventListener('pointercancel' as any, onUp);
+  }
+
+  /** World point on (or near) the paper to canvas pixels; null when off the sheet. */
+  private toPx(p: Vector3, out: { x: number; y: number; z: number }): boolean {
+    const l = this.inkMesh.worldToLocal(_pen.copy(p));
+    const u = l.x / SLATE_M.w + 0.5, v = l.y / SLATE_M.h + 0.5;
+    out.x = u * SLATE_PX.w;
+    out.y = (1 - v) * SLATE_PX.h;
+    out.z = l.z;
+    return u >= -0.03 && u <= 1.03 && v >= -0.03 && v <= 1.03;
+  }
+
+  private penDown(id: number, p: Vector3): boolean {
+    if (!this.toPx(p, _px)) return false;
+    this.pens.set(id, { x: _px.x, y: _px.y, mx: _px.x, my: _px.y, t: performance.now(), wx: p.x, wy: p.y, wz: p.z });
+    this.dot(_px.x, _px.y);
+    return true;
+  }
+
+  private penMove(id: number, p: Vector3) {
+    const pen = this.pens.get(id);
+    if (!pen || !this.toPx(p, _px)) return;
+    const x = _px.x, y = _px.y;
+    if (Math.hypot(x - pen.x, y - pen.y) < 2) return;
+    const g = this.inkCanvas.getContext('2d')!;
+    const mx = (pen.x + x) / 2, my = (pen.y + y) / 2;
+    g.strokeStyle = INK;
+    g.lineWidth = 15;
+    g.lineCap = 'round';
+    g.lineJoin = 'round';
+    g.beginPath();
+    g.moveTo(pen.mx, pen.my);
+    g.quadraticCurveTo(pen.x, pen.y, mx, my);
+    g.stroke();
+    this.inkTex.needsUpdate = true;
+    const now = performance.now();
+    const dist = Math.hypot(p.x - pen.wx, p.y - pen.wy, p.z - pen.wz);
+    sfx.scratchLevel(dist / Math.max(0.008, (now - pen.t) / 1000));
+    pen.x = x; pen.y = y; pen.mx = mx; pen.my = my; pen.t = now;
+    pen.wx = p.x; pen.wy = p.y; pen.wz = p.z;
+  }
+
+  private penUp(id: number) {
+    if (this.pens.delete(id) && this.pens.size === 0) {
+      sfx.penUp();
+      this.lastAction = performance.now();
+    }
+  }
+
+  /**
+   * Fingertip writing. Touching the paper starts a stroke; the stroke keeps
+   * going while the fingertip stays on the sheet, even pushed a few
+   * centimetres through it, and ends when the finger lifts or leaves the edge.
+   */
+  private updateFingers() {
+    const session = this.world.session;
+    if (!session || this.slateDown || this.slateTween) {
+      for (const id of FINGER_IDS) this.penUp(id);
+      return;
+    }
+    for (const src of session.inputSources) {
+      const side = src.handedness;
+      if (!src.hand || (side !== 'left' && side !== 'right')) continue;
+      const id = side === 'left' ? FINGER_IDS[0] : FINGER_IDS[1];
+      const tip = this.world.playerSpaceEntities.indexTipSpaces[side].object3D;
+      if (!tip) continue;
+      tip.getWorldPosition(_tip);
+      const on = this.toPx(_tip, _px);
+      const depth = _px.z; // + in front of the paper, - pushed through
+      // write at the fingertip's spot on the sheet
+      _hit.copy(_tip);
+      if (this.pens.has(id)) {
+        if (!on || depth > 0.02 || depth < -0.07) this.penUp(id);
+        else this.penMove(id, _hit);
+      } else if (on && depth < 0.008 && depth > -0.04) {
+        sfx.unlockAudio();
+        this.touch();
+        this.penDown(id, _hit);
+      }
+    }
   }
 
   private dot(x: number, y: number) {
@@ -436,10 +491,10 @@ export class ThreeThingsSystem extends createSystem({
     this.jarLabelCanvas = document.createElement('canvas');
     this.jarLabelTex = texture(this.jarLabelCanvas);
     const label = new Mesh(
-      new PlaneGeometry(0.11, 0.0645),
+      new PlaneGeometry(0.13, 0.0762),
       new MeshStandardMaterial({ map: this.jarLabelTex, alphaTest: 0.5, roughness: 0.9 }),
     );
-    label.position.set(0, 0.062, 0.08);
+    label.position.set(0, 0.07, 0.081);
     this.jar.add(wall, bottom, rim, label);
     this.redrawJarLabel();
     const e = this.world.createTransformEntity(this.jar);
@@ -834,7 +889,7 @@ export class ThreeThingsSystem extends createSystem({
    * target there, or resting hands would block gaze and tap it by accident.
    */
   private setSlateTouch(on: boolean) {
-    const ents = [this.slateEntity, this.world.getSceneEntity('guide-panel')];
+    const ents = [this.world.getSceneEntity('guide-panel')];
     for (const e of ents) {
       if (!e) continue;
       if (on && !e.hasComponent(PokeInteractable)) e.addComponent(PokeInteractable);
@@ -1116,6 +1171,7 @@ export class ThreeThingsSystem extends createSystem({
         if (this.lesson === 'write') this.placeCoach('write');
       }
     }
+    this.updateFingers();
     this.tickCoach(delta);
     // while a card is held, show where it would land
     for (const v of this.views.values()) {
