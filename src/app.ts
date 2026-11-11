@@ -162,6 +162,7 @@ export class ThreeThingsSystem extends createSystem({
   /** The slate folds down to lap height while sorting so rays reach the board. */
   private slateDown = false;
   private slateEntity!: Entity;
+  private boardTween: { p0: Vector3; q0: Quaternion; s0: number; p1: Vector3; q1: Quaternion; s1: number; t: number; dur: number; done: () => void } | null = null;
   private inkMesh!: Mesh;
   /** latest eye-gaze ray in world space, when the device reports one */
   private eyeO = new Vector3();
@@ -182,6 +183,8 @@ export class ThreeThingsSystem extends createSystem({
   private ghostPath: GhostPath | null = null;
   private ghostKind: 'pinch' | 'point' = 'pinch';
   private tableTries = 0;
+  /** the ghost hand can be switched off (used when recording scripted demo takes) */
+  ghostEnabled = true;
   private jarOnTable = false;
 
   init(): void {
@@ -982,16 +985,24 @@ export class ThreeThingsSystem extends createSystem({
     if (this.wallTarget) {
       // grow on far walls so the handwriting stays readable
       const dist = this.player.head.getWorldPosition(_p2).distanceTo(this.wallTarget.p);
-      this.boardScale = Math.min(2.2, Math.max(1, dist / 1.1));
-      setWorldPose(this.board, this.wallTarget.p, this.wallTarget.q, this.boardScale);
-      sfx.wallStick(this.wallTarget.p);
+      const to = this.wallTarget;
       this.wallTarget = null;
       this.boardOnWall = true;
-      this.haptic(0.8, 70);
-      store.setTaught('wall');
-      this.flash('Stuck to your wall', 'It will be there next time you put the headset on.');
-      this.anchorRequest = true;
-      this.relayout(true);
+      // glide onto the wall, then stick (sound, haptic, anchor) on arrival
+      this.board.updateWorldMatrix(true, false);
+      const p0 = new Vector3(), q0 = new Quaternion(), s0 = new Vector3();
+      this.board.matrixWorld.decompose(p0, q0, s0);
+      this.boardTween = {
+        p0, q0, s0: s0.x, p1: to.p.clone(), q1: to.q.clone(), s1: Math.min(2.2, Math.max(1, dist / 1.1)), t: 0, dur: 0.55,
+        done: () => {
+          this.boardScale = this.boardTween?.s1 ?? 1;
+          sfx.wallStick(to.p);
+          this.haptic(0.8, 70);
+          store.setTaught('wall');
+          this.flash('Stuck to your wall', 'It will be there next time you put the headset on.');
+          this.anchorRequest = true;
+        },
+      };
       return;
     }
     const p = this.board.getWorldPosition(_p);
@@ -1117,14 +1128,32 @@ export class ThreeThingsSystem extends createSystem({
         _m.premultiply(this.world.player.matrixWorld);
         _m.decompose(_p, _q, _s);
         setWorldPose(this.board, _p, _q, this.boardScale);
+        if (this.revealOnFrame) {
+          this.revealOnFrame = false;
+          this.relayout(true);
+          this.setBoardVisible(true);
+        }
       }
     }
+  }
+
+  private revealOnFrame = false;
+
+  /** Board and its pinned cards appear and disappear together. */
+  private setBoardVisible(on: boolean) {
+    this.board.visible = on;
+    for (const v of this.views.values()) if (v.thing.status === 'today') v.obj.visible = on;
+    if (on) this.refreshCoach();
+    else this.coach.hide();
   }
 
   private restoreAnchor() {
     const uuid = store.state.boardAnchor;
     const session = this.world.session as any;
     if (!uuid || !session?.restorePersistentAnchor) return;
+    // don't show the board in its default spot and then jump to the wall
+    this.setBoardVisible(false);
+    const reveal = setTimeout(() => this.setBoardVisible(true), 3000);
     session
       .restorePersistentAnchor(uuid)
       .then((anchor: XRAnchor) => {
@@ -1140,10 +1169,15 @@ export class ThreeThingsSystem extends createSystem({
         this.boardAnchor = anchor;
         this.boardOnWall = true;
         this.relayout(true);
+        // show it on the next frame, once the anchor pose has been applied
+        this.revealOnFrame = true;
+        clearTimeout(reveal);
       })
       .catch((err: unknown) => {
         console.warn('[three-things] could not restore the board anchor', err);
         store.setBoardAnchor(undefined);
+        clearTimeout(reveal);
+        this.setBoardVisible(true);
       });
   }
 
@@ -1169,6 +1203,19 @@ export class ThreeThingsSystem extends createSystem({
         this.slateTween = null;
         this.ghostPath = null;
         if (this.lesson === 'write') this.placeCoach('write');
+      }
+    }
+    if (this.boardTween) {
+      const bt = this.boardTween;
+      bt.t = Math.min(1, bt.t + delta / bt.dur);
+      const k = ease(bt.t);
+      _p.lerpVectors(bt.p0, bt.p1, k);
+      _q.slerpQuaternions(bt.q0, bt.q1, k);
+      this.boardScale = bt.s0 + (bt.s1 - bt.s0) * k;
+      setWorldPose(this.board, _p, _q, this.boardScale);
+      if (bt.t >= 1) {
+        bt.done();
+        this.boardTween = null;
       }
     }
     this.updateFingers();
@@ -1246,7 +1293,7 @@ export class ThreeThingsSystem extends createSystem({
     const busy = this.pens.size > 0 || [...this.views.values()].some((v) => v.grabbed) || this.queries.grabbedBoard.entities.size > 0;
     const idle = (now - this.lastAction) / 1000;
     const lessonKey = this.lesson === 'warmup' ? 'jar' : this.lesson;
-    const wanted = this.laidOut && !busy && !this.slateTween && (store.taught(lessonKey) ? idle > 14 : idle > 1.2);
+    const wanted = this.ghostEnabled && this.laidOut && !busy && !this.slateTween && (store.taught(lessonKey) ? idle > 14 : idle > 1.2);
     if (wanted) {
       if (!this.ghostPath) this.ghostPath = this.buildGhostPath();
       if (this.ghostPath) this.ghost.play(this.ghostPath, this.ghostKind);
@@ -1443,23 +1490,6 @@ export class ThreeThingsSystem extends createSystem({
     const o = this.coach.obj;
     if (where === 'focus') where = this.lesson;
     if (where === 'done' && store.userThings().every((t) => t.status !== 'today')) where = 'pick';
-    if (where === 'done' || where === 'warmup') {
-      // above the jar, facing the viewer
-      const m = this.jarMouth();
-      if (where === 'warmup') {
-        // first run: under the board, between the card and the jar
-        this.board.updateWorldMatrix(true, false);
-        _p.set(0, -BOARD_M.h / 2 - 0.08, 0.02).applyMatrix4(this.board.matrixWorld);
-        this.board.getWorldQuaternion(_q);
-        setWorldPose(o, _p, _q, 1.25);
-        return;
-      }
-      _p.copy(m).add(_p2.set(0, 0.16, 0));
-      this.player.head.getWorldPosition(_p2);
-      _q.setFromAxisAngle(_up, Math.atan2(_p2.x - _p.x, _p2.z - _p.z));
-      setWorldPose(o, _p, _q, 0.62);
-      return;
-    }
     if (where === 'write') {
       // just above the slate's top edge
       this.slate.updateWorldMatrix(true, false);

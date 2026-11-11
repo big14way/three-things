@@ -6,7 +6,7 @@
 <style>
   .root {
     flex-direction: column;
-    width: 470px;
+    width: 560px;
     padding-top: 10px;
     padding-bottom: 10px;
     padding-left: 12px;

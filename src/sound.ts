@@ -9,6 +9,9 @@
 type P = { x: number; y: number; z: number } | undefined;
 
 let ctx: AudioContext | null = null;
+/** everything plays through one master bus, so it can also be tapped for recording */
+let master: GainNode | null = null;
+let tap: MediaStreamAudioDestinationNode | null = null;
 let noise: AudioBuffer | null = null;
 let scratch: { src: AudioBufferSourceNode; gain: GainNode; filter: BiquadFilterNode } | null = null;
 
@@ -16,6 +19,8 @@ function audio(): AudioContext | null {
   if (ctx) return ctx;
   try {
     ctx = new AudioContext();
+    master = ctx.createGain();
+    master.connect(ctx.destination);
     const len = ctx.sampleRate;
     noise = ctx.createBuffer(1, len, ctx.sampleRate);
     const d = noise.getChannelData(0);
@@ -35,7 +40,7 @@ export function unlockAudio() {
 /** Output node for a sound at `pos` (or straight to the speakers). */
 function out(pos: P): AudioNode {
   const a = ctx!;
-  if (!pos) return a.destination;
+  if (!pos) return master!;
   const pan = a.createPanner();
   pan.panningModel = 'HRTF';
   pan.distanceModel = 'inverse';
@@ -48,7 +53,7 @@ function out(pos: P): AudioNode {
   } else {
     pan.setPosition(pos.x, pos.y, pos.z);
   }
-  pan.connect(a.destination);
+  pan.connect(master!);
   return pan;
 }
 
@@ -127,7 +132,7 @@ export function scratchLevel(speed: number) {
     filter.Q.value = 0.9;
     const gain = a.createGain();
     gain.gain.value = 0;
-    src.connect(filter).connect(gain).connect(a.destination);
+    src.connect(filter).connect(gain).connect(master!);
     src.start();
     scratch = { src, gain, filter };
   }
@@ -195,4 +200,15 @@ export function cheer(pos?: P) {
   if (!a) return;
   const t = a.currentTime;
   [523, 659, 784, 1047].forEach((f, i) => tone(t + i * 0.09, f, 0.5, 0.05, 'triangle', pos));
+}
+
+/** A live stream of the app's own sound (used by the dev recorder for demo footage). */
+export function audioStream(): MediaStream | null {
+  const a = audio();
+  if (!a || !master) return null;
+  if (!tap) {
+    tap = a.createMediaStreamDestination();
+    master.connect(tap);
+  }
+  return tap.stream;
 }
