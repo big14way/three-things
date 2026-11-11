@@ -21,6 +21,14 @@
     gap: 8px;
   }
 
+  .keep {
+    flex-shrink: 0;
+  }
+
+  .nw {
+    white-space: pre;
+  }
+
   .picks {
     flex-direction: row;
     flex-wrap: wrap;
@@ -30,23 +38,23 @@
 </style>
 <Panel class="root">
   <div class="row">
-    <Button id="make" variant="primary">
+    <Button id="make" class="keep" variant="primary">
       <ButtonIcon><Check></Check></ButtonIcon>
-      <ButtonLabel id="make-label">Make card</ButtonLabel>
+      <ButtonLabel id="make-label" class="nw">Make card</ButtonLabel>
     </Button>
-    <Button id="erase" variant="secondary">
+    <Button id="erase" class="keep" variant="secondary">
       <ButtonIcon><Eraser></Eraser></ButtonIcon>
       <ButtonLabel>Erase</ButtonLabel>
     </Button>
-    <Button id="ideas" variant="secondary">
+    <Button id="ideas" class="keep" variant="secondary">
       <ButtonIcon><Lightbulb></Lightbulb></ButtonIcon>
       <ButtonLabel>Ideas</ButtonLabel>
     </Button>
-    <Button id="voice" variant="secondary" style="display: none">
+    <Button id="voice" class="keep" variant="secondary" style="display: none">
       <ButtonIcon><Mic></Mic></ButtonIcon>
-      <ButtonLabel>Say it</ButtonLabel>
+      <ButtonLabel class="nw">Say it</ButtonLabel>
     </Button>
-    <Button id="exit" variant="tertiary">
+    <Button id="exit" class="keep" variant="tertiary">
       <ButtonIcon><LogOut></LogOut></ButtonIcon>
     </Button>
   </div>
