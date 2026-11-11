@@ -1,0 +1,72 @@
+<!--
+  Controls beside the writing slate. Horizon kit components (Panel, Button,
+  ButtonIcon, ButtonLabel) and Lucide icons are bundled with IWSDK.
+  The panel is placed at scale 0.1, so 10 units here are 1 cm in the room.
+-->
+<style>
+  .root {
+    flex-direction: column;
+    width: 250px;
+    padding-top: 16px;
+    padding-bottom: 16px;
+    padding-left: 16px;
+    padding-right: 16px;
+    gap: 10px;
+  }
+
+  .hint {
+    width: 100%;
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 1.25;
+    color: #272727;
+  }
+
+  .hint:dark {
+    color: rgba(255, 255, 255, 0.92);
+  }
+
+  .row {
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .wide {
+    width: 100%;
+  }
+
+  .picks {
+    flex-direction: column;
+    gap: 6px;
+  }
+</style>
+<Panel class="root">
+  <span id="hint" class="hint">Write one thing you want to do today.</span>
+  <Button id="make" variant="primary" class="wide">
+    <ButtonIcon><Check></Check></ButtonIcon>
+    <ButtonLabel id="make-label">Make card</ButtonLabel>
+  </Button>
+  <div class="row">
+    <Button id="erase" variant="secondary">
+      <ButtonIcon><Eraser></Eraser></ButtonIcon>
+      <ButtonLabel>Erase</ButtonLabel>
+    </Button>
+    <Button id="ideas" variant="secondary">
+      <ButtonIcon><Lightbulb></Lightbulb></ButtonIcon>
+      <ButtonLabel>Ideas</ButtonLabel>
+    </Button>
+    <Button id="exit" variant="tertiary">
+      <ButtonIcon><LogOut></LogOut></ButtonIcon>
+    </Button>
+  </div>
+  <div id="picks" class="picks">
+    <Button id="pick0" variant="secondary" size="sm"><ButtonLabel>Move my body</ButtonLabel></Button>
+    <Button id="pick1" variant="secondary" size="sm"><ButtonLabel>One hour of deep work</ButtonLabel></Button>
+    <Button id="pick2" variant="secondary" size="sm"><ButtonLabel>Call someone I love</ButtonLabel></Button>
+    <Button id="pick3" variant="secondary" size="sm"><ButtonLabel>Tidy one corner</ButtonLabel></Button>
+    <Button id="pick4" variant="secondary" size="sm"><ButtonLabel>Read 10 pages</ButtonLabel></Button>
+    <Button id="pick5" variant="secondary" size="sm"><ButtonLabel>Drink more water</ButtonLabel></Button>
+  </div>
+</Panel>

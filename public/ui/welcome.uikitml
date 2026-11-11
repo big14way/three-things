@@ -1,0 +1,41 @@
+<!-- Shown on a flat screen before entering mixed reality. -->
+<style>
+  .root {
+    flex-direction: column;
+    width: 360px;
+    padding-top: 20px;
+    padding-left: 24px;
+    padding-right: 24px;
+    padding-bottom: 22px;
+    gap: 12px;
+  }
+
+  .title {
+    font-size: 30px;
+    font-weight: 700;
+    color: #272727;
+  }
+
+  .title:dark {
+    color: rgba(255, 255, 255, 0.95);
+  }
+
+  .body {
+    font-size: 15px;
+    font-weight: 500;
+    line-height: 1.35;
+    color: #3a3a3a;
+  }
+
+  .body:dark {
+    color: rgba(255, 255, 255, 0.85);
+  }
+</style>
+<Panel class="root">
+  <span class="title">Three Things</span>
+  <span class="body">Write what you want to get done today with your finger. Pick three. Stick them on your wall. Drop each one in the jar when it is done.</span>
+  <Button id="enter" variant="primary">
+    <ButtonIcon><RectangleGoggles></RectangleGoggles></ButtonIcon>
+    <ButtonLabel>Start in mixed reality</ButtonLabel>
+  </Button>
+</Panel>
